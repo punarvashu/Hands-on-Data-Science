@@ -1,0 +1,307 @@
+CREATE TABLE IPL_Ball (
+    id INT,
+	inning INT,
+	over INT,
+	ball INT,
+    batsman VARCHAR(50),
+    non_striker VARCHAR(50),
+    bowler VARCHAR(100),
+    batsman_runs INT,
+	extra_runs INT,
+	total_runs INT,
+    is_wickets INT,
+	dismissal_kind VARCHAR(50),
+	player_dismissed VARCHAR(50),
+	fielder VARCHAR(50),
+	extra_types VARCHAR(50),
+	batting_team VARCHAR(50),
+	bowling_team VARCHAR(50)
+  );
+
+CREATE table IPL_matches(
+    id INT PRIMARY KEY,
+    city varchar(50),
+	date DATE,
+	player_of_match varchar(50),
+	venue varchar(100),
+	neutral_venue INT,
+	team1 varchar(50),
+	team2 varchar(50),
+	toss_winner varchar(50),
+	toss_decision varchar(50),
+	winner varchar(50),
+	result varchar(50),
+	result_margin INT,
+	eliminator varchar(50),
+	method varchar(50),
+	umpire1 varchar(50),
+	umpire2 varchar(50)
+);
+
+select * from IPL_Ball;
+select * from IPL_matches;
+
+copy IPL_Ball 
+from 'C:\Program Files\PostgreSQL\16\data\Data_copy\IPL_Ball.csv' 
+CSV header ;
+
+copy IPL_matches 
+from 'C:\Program Files\PostgreSQL\16\data\Data_copy\IPL_matches.csv' 
+CSV header ;
+
+--Aggressive Batsmen(players with high S.R who have faced at least 500 balls):
+SELECT
+    batsman,
+    SUM(batsman_runs) AS total_runs,
+    COUNT(ball) AS total_balls,
+    (SUM(batsman_runs) * 100.0 / COUNT(ball)) AS strike_rate
+FROM
+    IPL_Ball
+GROUP BY
+  batsman
+HAVING
+    COUNT(ball) >= 500
+ORDER BY
+    strike_rate DESC
+LIMIT 10;
+
+
+--Anchor Batsmen(players with good Average who have played more than 2 IPL seasons):
+select
+	batsman,
+	sum(is_wickets) as dismissal,
+	sum(batsman_runs) as total_runs,
+	count(distinct id) as match_played,
+	sum(batsman_runs)/ nullif(sum(is_wickets),0) as average
+	from ipl_ball
+	group by batsman
+	having count(distinct id)>28
+	order by average desc
+	limit 10;
+	
+--Hard hitting batsman
+select 
+distinct batsman,
+COUNT(*) 
+FILTER (WHERE batsman_runs = 4 OR batsman_runs = 6) AS boundary_count,
+SUM(batsman_runs) AS total_runs,
+sum(CASE when batsman_runs=4 or batsman_runs=6 then batsman_runs else 0 end)
+as boundry_runs,
+count(distinct id) as match_played,
+(SUM(CASE WHEN batsman_runs = 4 OR batsman_runs = 6 THEN batsman_runs ELSE 0 END) * 100.0 /
+ NULLIF(SUM(batsman_runs), 0))
+as boundry_percent
+from IPL_Ball
+group by batsman
+having count(distinct id)>28
+order by boundary_count desc
+limit 10;
+
+--Economical Bowler
+SELECT bowler, 
+round((SUM(total_runs) / (count(bowler)/6.0)),2) AS economy       
+FROM ipl_ball 
+GROUP BY bowler
+HAVING COUNT(bowler) >= 500  
+ORDER BY economy desc
+LIMIT 10;
+
+--Wicket taking bowler
+SELECT
+    bowler,
+    SUM(ball) AS total_balls_bowled,
+    SUM(is_wickets) AS total_wickets_taken,
+    (SUM(ball) * 1.0 / NULLIF(SUM(is_wickets), 0)) AS strike_rate
+FROM
+    IPL_Ball
+GROUP BY
+    bowler
+HAVING
+    sum(ball) >= 500
+ORDER BY
+    strike_rate ASC
+LIMIT 10;
+
+--Bidding on All rounder
+SELECT a.batsman AS all_rounder, 
+ROUND(SUM(a.batsman_runs)/CAST(COUNT(a.ball) AS DECIMAL)*100,3) AS batting_strike_Rate, 
+bowling_strike_rate
+FROM IPL_Ball AS a 
+INNER JOIN
+(SELECT bowler, COUNT(ball) AS balls_bowled,
+ROUND(CAST(COUNT(ball) AS DECIMAL)/SUM(is_wickets),3) AS bowling_strike_rate FROM IPL_Ball
+GROUP BY bowler
+HAVING COUNT(ball) >= 300
+ORDER BY bowling_strike_rate) AS b
+ON a.batsman = b.bowler
+WHERE extra_types NOT IN ('wides')
+GROUP BY batsman, bowling_strike_rate
+HAVING COUNT(ball) >= 500
+ORDER BY batting_strike_Rate DESC
+LIMIT 10;
+
+--Bidding on Wicket-keeper
+-- 1. created table wicket_keeper with total number of stumping
+create table wicket_keeper as
+select fielder,
+count(case when dismissal_kind= 'stumped' then 1 end)as total_stumping
+from IPL_Ball
+where dismissal_kind in ('stumped')
+group by fielder
+order by total_stumping desc;
+ select * from wicket_keeper;
+--2. created table power hitter 
+create table power_hitters as
+select 
+distinct batsman,
+COUNT(*) FILTER (WHERE batsman_runs = 4 OR batsman_runs = 6) AS boundary_count,
+        SUM(batsman_runs) AS total_runs,
+		sum(CASE when batsman_runs=4 or batsman_runs=6 then batsman_runs else 0 end)
+		as boundry_runs,
+		count(distinct id) as match_played,
+		(SUM(CASE WHEN batsman_runs = 4 OR batsman_runs = 6 THEN batsman_runs ELSE 0 END) * 100.0 / 
+		NULLIF(SUM(batsman_runs), 0))
+		as boundry_percent
+		from IPL_Ball
+		group by batsman
+		having count(distinct id)>28
+		order by boundary_count desc;
+select * from power_hitters;
+
+--3. Joined wicket_keeper and power_hitter		
+select a.fielder,
+       a.total_stumping,
+	   b.boundary_count,
+	   b.total_runs,
+	   b.boundry_runs,
+	   b.boundry_percent
+from wicket_keeper as a
+inner join power_hitters as b
+on a.fielder = b.batsman
+order by total_stumping desc , boundry_percent desc
+limit 10;
+
+/*Additional Questions
+1st. */
+select count (distinct city) from ipl_matches;
+
+--2nd
+CREATE TABLE deliveries_v02 AS
+SELECT
+    *,
+    CASE
+        WHEN total_runs >= 4 THEN 'boundary'
+        WHEN total_runs = 0 THEN 'dot'
+        ELSE 'other'
+    END AS ball_result
+FROM
+    IPL_Ball;
+
+select * from deliveries_v02;
+
+--3rd
+SELECT
+    ball_result,
+    COUNT(*) AS total_count
+FROM
+    deliveries_v02
+WHERE
+    ball_result IN ('boundary', 'dot')
+GROUP BY
+    ball_result;
+
+--4th
+SELECT
+    DISTINCT batting_team,
+    COUNT(*) AS total_boundaries
+FROM
+    deliveries_v02
+WHERE
+    ball_result = 'boundary'
+GROUP BY
+    batting_team
+ORDER BY
+    total_boundaries DESC;
+
+--5th
+SELECT
+    Distinct bowling_team,
+    COUNT(*) AS total_dot_balls
+FROM
+    deliveries_v02
+WHERE
+    ball_result = 'dot'
+GROUP BY
+    bowling_team
+ORDER BY
+    total_dot_balls DESC;
+	
+--6th
+SELECT
+    dismissal_kind,
+    COUNT(*) AS total_dismissals
+FROM
+    deliveries_v02
+WHERE
+    dismissal_kind IS NOT NULL
+    AND dismissal_kind <> 'NA'
+GROUP BY
+    dismissal_kind
+ORDER BY
+    total_dismissals DESC;
+	
+--7th
+SELECT
+    bowler,
+    SUM(extra_runs) AS total_extra_runs
+FROM
+    IPL_Ball
+WHERE
+    extra_runs > 0
+GROUP BY
+    bowler
+ORDER BY
+    total_extra_runs DESC
+LIMIT 5;
+
+--8th
+CREATE TABLE deliveries_v03 AS
+SELECT
+    dv02.*,
+    m.venue,
+    m.date AS match_date
+FROM
+    deliveries_v02 dv02
+JOIN
+    ipl_matches m ON dv02.id = m.id;
+
+select * from deliveries_v03;
+
+--9th
+SELECT
+    venue,
+    SUM(total_runs) AS total_runs_scored
+FROM
+    deliveries_v03
+GROUP BY
+    venue
+ORDER BY
+    total_runs_scored DESC;
+
+--10th
+SELECT
+    EXTRACT(YEAR FROM match_date) AS year,
+    SUM(total_runs) AS total_runs_scored
+FROM
+    deliveries_v03
+WHERE
+    venue = 'Eden Gardens'
+GROUP BY
+    year
+ORDER BY
+    total_runs_scored DESC;
+
+
+
+
+
